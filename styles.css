@@ -53,6 +53,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .login-card input:focus { outline: 3px solid rgba(97,134,236,.28); border-color: #6e8de8; }
 .login-submit { width: 100%; min-height: 42px; margin-top: 13px; }
 .login-submit span { font-size: 16px; }
+.login-retry { width: 100%; min-height: 37px; margin-top: 9px; }
+.login-retry[hidden] { display: none; }
 .login-footnote { margin: 15px 0 0; color: #8598b3; font-size: 9px; line-height: 1.55; }
 .login-error { padding: 9px 10px; margin: 9px 0 0; border: 1px solid rgba(223,113,124,.3); border-radius: 7px; color: #ffc7ca; background: rgba(114,34,48,.25); font-size: 9px; line-height: 1.5; }
 .login-error[hidden] { display: none; }
