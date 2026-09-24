@@ -12,6 +12,10 @@ jobs:
   tests:
     name: pytest (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    # The suite finishes in well under a minute. Without this, a hang (or an
+    # unexpectedly slow download) sits on GitHub's six-hour default instead of
+    # failing fast and visibly.
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
