@@ -187,7 +187,7 @@ function setRuntimeStatus() {
   });
 }
 
-function showLogin(message = '') {
+function showLogin(message = '', { retryable = false } = {}) {
   sessionAuthenticated = false;
   if (dialog.open) dialog.close();
   modalMode = null;
@@ -199,6 +199,8 @@ function showLogin(message = '') {
     error.textContent = message;
     error.hidden = !message;
   }
+  const retry = document.getElementById('login-retry');
+  if (retry) retry.hidden = !retryable;
   if (message.toLowerCase().includes('server')) {
     document.getElementById('login-footnote').textContent = 'Start the backend server, then retry. Workspace data is stored on that server.';
   } else {
@@ -254,8 +256,10 @@ async function apiRequest(path, options = {}) {
   }
   apiAvailable = true;
   if (response.status === 401 && path !== '/api/auth/login') {
-    showLogin('Your session expired. Sign in again to continue.');
-    throw new Error('Your session expired. Sign in again to continue.');
+    const expired = new Error('Your session expired. Sign in again to continue.');
+    expired.sessionExpired = true;
+    showLogin(expired.message);
+    throw expired;
   }
   let payload = null;
   if (response.status !== 204) {
@@ -278,15 +282,37 @@ async function loadWorkspace() {
 async function initializeApp() {
   hydrateIcons();
   try {
-    const response = await fetch('/api/auth/me', { credentials: 'same-origin', headers: { Accept: 'application/json' } });
-    if (!response.ok) throw new Error('The backend server is unavailable.');
+    let response;
+    try {
+      response = await fetch('/api/auth/me', { credentials: 'same-origin', headers: { Accept: 'application/json' } });
+    } catch {
+      showLogin('Backend server unavailable. Start the API server, then retry.', { retryable: true });
+      return;
+    }
+    if (response.status === 401) {
+      showLogin('Your session expired. Sign in again to continue.');
+      return;
+    }
+    if (!response.ok) {
+      showLogin('Backend server unavailable. Start the API server, then retry.', { retryable: true });
+      return;
+    }
     const session = await response.json();
     apiAvailable = true;
     if (!session.authenticated) {
       showLogin();
       return;
     }
-    await loadWorkspace();
+    try {
+      await loadWorkspace();
+    } catch (error) {
+      if (error?.sessionExpired) return; // apiRequest already returned the user to the sign-in screen.
+      showLogin(
+        error?.message || 'The workspace could not be loaded. Retry, then sign in again if the problem continues.',
+        { retryable: true },
+      );
+      return;
+    }
     const result = new URLSearchParams(window.location.search).get('social_result');
     if (result) {
       window.history.replaceState({}, document.title, window.location.pathname + window.location.hash);
@@ -299,7 +325,10 @@ async function initializeApp() {
     }
   } catch (error) {
     apiAvailable = false;
-    showLogin('Backend server unavailable. Start the API server, then sign in again.');
+    showLogin(
+      error?.message ? `The workspace could not be loaded: ${error.message}` : 'The workspace could not be loaded.',
+      { retryable: true },
+    );
   }
 }
 
@@ -1275,6 +1304,11 @@ async function handleAction(action, element) {
 }
 
 document.addEventListener('click', (event) => {
+  if (event.target.closest('#login-retry')) {
+    event.preventDefault();
+    initializeApp();
+    return;
+  }
   const pageButton = event.target.closest('[data-page]');
   if (pageButton) {
     event.preventDefault();

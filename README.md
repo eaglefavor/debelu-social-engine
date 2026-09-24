@@ -55,6 +55,133 @@ For any public deployment:
 
 Keep `.env` private. AI and social credentials stay on the server; no provider key or social token belongs in frontend code, a public repository, or chat. `AI_BASE_URL` supports OpenAI-compatible Chat Completions services and must use HTTPS except for localhost development.
 
+### Why Vercel does not serve this app
+
+This service cannot run on Vercel or any other static host. It needs the long-running FastAPI process, PostgreSQL and the separate publishing worker — the three services defined in `compose.yaml`. A Vercel project connected to this repository builds a **static site**: `index.html`, `app.js` and `styles.css` are published, and every `/api/*` route returns 404. The UI loads and then reports the backend as unavailable.
+
+`vercel.json` therefore disables automatic deployments, so no such build is published. To serve the frontend from Vercel against a backend hosted elsewhere, replace that block with a rewrite that proxies API traffic to the real origin:
+
+```json
+{
+  "rewrites": [{ "source": "/api/(.*)", "destination": "https://api.example.com/api/$1" }]
+}
+```
+
+Either way the backend itself must be deployed with `compose.yaml` behind HTTPS as described above.
+
+## Running it: choosing a host
+
+This service needs a **long-running process, a real database and a persistent disk**. That rules out static hosts and any platform that cannot keep a background worker resident.
+
+| Option | Fit | Notes |
+| --- | --- | --- |
+| **Docker Compose** (any VPS) | Best | The layout above needs no changes. Put it behind a managed HTTPS proxy. |
+| **Render** (`render.yaml`) | Good | Blueprint creates the service, disk and PostgreSQL. One service runs both processes. Paid instance required for a disk. |
+| **Fly.io** (`fly.toml`) | Good | Docker-native with a volume. One Machine runs both processes. |
+| **Vercel / Netlify / static hosts** | **No** | They publish static files only; every `/api/*` route 404s. See `vercel.json`. |
+| **Serverless functions** | **No** | The publishing worker is a permanent poll loop, not a request handler. |
+| **Google Drive / Sheets** | **No** | No code execution, no transactions, cannot serve the signed media URLs providers fetch. See the Drive section for what it *is* good for. |
+
+### Why one container instead of two
+
+`compose.yaml` runs the web service and the publishing worker separately, sharing a Docker volume. That does **not** map onto managed hosts:
+
+- **Fly.io**: "a volume can be attached to only one Machine" — separate process groups cannot share it.
+- **Render**: a disk attaches to a single service, and a service with a disk cannot autoscale.
+
+Because the worker reads the media directory the web service writes, splitting them breaks publishing. `RUN_MODE=all` therefore runs both processes in one container against one disk:
+
+```bash
+RUN_MODE=web     # migrate, then uvicorn only        (compose default)
+RUN_MODE=worker  # the publishing worker only        (compose worker service)
+RUN_MODE=all     # both in one container, one disk   (Fly.io, Render)
+```
+
+Migrations run inside the supervisor before whichever processes start, so the worker never sees a stale schema. On shutdown the worker stops first — it may be mid-publish, and it needs the web process still serving the media URL a provider is fetching. A clean `SIGTERM` exits **0**; a second signal forces immediate exit.
+
+The image stays non-root (uid 10001), which Compose volumes support because Docker copies the image's directory ownership into a fresh volume. **Platform volumes are mounted root-owned**, so the supervisor checks both data directories at startup and fails immediately with the fix rather than throwing later during an upload or backup:
+
+```
+Mounted volumes are often root-owned while this image runs as uid 10001.
+  Fly.io:  fly ssh console -C 'chown -R 10001:10001 /app/data'
+```
+
+### PostgreSQL connection strings
+
+Managed providers hand out `postgresql://` (Render, Fly) or `postgres://` (Heroku). SQLAlchemy maps both to **psycopg2**, which this project deliberately does not depend on — it ships psycopg 3. `backend/config.py` rewrites the scheme to `postgresql+psycopg://` for the app, Alembic and the Drive backup code alike. Without it the very first connection, including startup migrations, fails with `No module named 'psycopg2'`.
+
+`pg_dump` is invoked through libpq `PG*` environment variables, so credentials never appear in the process list, and query options such as `?sslmode=require` are preserved — dropping them makes pg_dump fail against an otherwise healthy database.
+
+### Render
+
+```bash
+# In the Render dashboard: New -> Blueprint -> select this repository.
+# Render prompts for APP_PASSWORD, APP_PUBLIC_URL, SOCIAL_TOKEN_ENCRYPTION_KEY
+# and AI_API_KEY, and generates APP_SECRET.
+```
+
+`render.yaml` provisions the web service (Docker, health check on `/api/health`), a 10 GB disk mounted at `/app/data`, and a PostgreSQL instance. Publishing starts disabled; enable it only after the prerequisites above are met. Set `APP_PUBLIC_URL` to the service URL so provider callbacks and media URLs resolve.
+
+### Fly.io
+
+```bash
+fly launch --no-deploy --copy-config --name <your-app-name>
+fly volumes create debelu_data --size 10 --region <region>
+fly secrets set APP_PASSWORD=... APP_SECRET=... SOCIAL_TOKEN_ENCRYPTION_KEY=...
+fly deploy
+```
+
+`fly.toml` mounts the volume at `/app/data` and deliberately disables scale-to-zero: the publishing worker must stay resident to pick up scheduled jobs, so suspending the Machine would silently stop processing.
+
+### CI
+
+`.github/workflows/tests.yml` runs the full suite on Python 3.11 and 3.12 for every pull request and push to `main`. The tests need no `.env`, no database server and no network.
+
+## Google Drive side-channel (optional)
+
+Drive is **not** a backend for this application and cannot be one: it executes no code, offers no transactions or compare-and-swap, and cannot serve the signed `/public/media/{asset_id}` URLs that Meta and TikTok fetch. The publishing worker's exactly-once job claiming depends on a conditional `UPDATE ... WHERE status = ?` returning `rowcount == 1`, which Drive cannot express — losing it means duplicate posts to live accounts.
+
+What Drive *is* good at is the work that happens around the request path. All of it is optional and disabled by default (`GDRIVE_ENABLED=false`); when disabled, nothing contacts Google and the app behaves exactly as before.
+
+| Command | What it does |
+| --- | --- |
+| `python -m backend.drive_cli backup` | Database, media archive and a status manifest, then prunes old backups |
+| `python -m backend.drive_cli list-backups` | Lists existing backups with retention applied |
+| `python -m backend.drive_cli verify <file-id>` | Downloads a backup and checks header, integrity and expected tables |
+| `python -m backend.drive_cli restore <file-id> --confirm` | Restores a SQLite database, keeping a pre-restore safety copy |
+| `python -m backend.drive_cli import-ideas <file-id>` | Creates ideas from a Sheet or CSV (`--dry-run` to preview) |
+| `python -m backend.drive_cli ingest-media <folder-id>` | Imports images/video into the asset library (`--dry-run` to preview) |
+| `python -m backend.drive_cli export-reports` | Uploads weekly and lifetime analytics CSV |
+| `python -m backend.drive_cli folders` | Creates and prints the folder layout |
+| `python -m backend.drive_cli status` | Shows configuration without writing anything |
+
+Every command prints a JSON summary, so `backup` suits a cron entry. Backups close the gap noted above: the README already asks for backups of **both** PostgreSQL and the media volume, and this covers both plus a manifest an operator can read without database access. The manifest deliberately excludes credentials, tokens and provider secrets.
+
+### Setting it up
+
+1. Create a Google Cloud service account with the Drive API enabled, and download its JSON key.
+2. Set `GDRIVE_ENABLED=true` and point `GDRIVE_SERVICE_ACCOUNT_JSON` at that key file (or paste the JSON).
+3. Choose one of these, because **a service account has its own empty Drive**:
+   - Create a folder in *your* Drive, share it with the service account's `client_email`, and set `GDRIVE_ROOT_FOLDER_ID` to that folder's id; **or**
+   - Leave `GDRIVE_ROOT_FOLDER_ID` blank and set `GDRIVE_SHARE_WITH` to your email — the app creates folders automatically and shares them with you, since you otherwise cannot see them.
+
+### Idea import format
+
+CSV, or a Google Sheet (exported as CSV automatically). Only `topic` is required; `category` falls back to `CYBERSECURITY` and platform columns become draft bodies:
+
+```csv
+topic,category,audience,instagram,threads,tiktok
+Zero trust basics,CLOUD,Platform teams,IG draft,Threads draft,
+```
+
+Imports are idempotent by topic — re-running after adding rows creates only the new ones. Media intake de-duplicates on the stored asset digest, so the same folder can be re-ingested safely. Both support `--dry-run`.
+
+### Notes and limits
+
+- Restore is SQLite-only and refuses to run without `--confirm`. PostgreSQL backups are taken with `pg_dump` (required on `PATH` for a PostgreSQL deployment); restore them with `pg_restore` in a maintenance window. Credentials are passed to `pg_dump` through the environment, never as command-line arguments.
+- Media intake reuses the same validation as browser uploads, so type, size and image normalisation rules are identical.
+- Restoring while the app is running is not advisable: stop the web process and the worker first.
+
 ## Implemented workflow
 
 - **Persistent workspace:** content ideas, platform variants, brand profile, approvals, attached media, schedules, publishing jobs, analytics snapshots and audit history are persisted in the configured database.
@@ -90,6 +217,10 @@ Run the offline/mock-based suite:
 ```bash
 .venv/bin/python -m unittest discover -s tests -v
 ```
+
+`python -m pytest -q` runs the same suite; install `requirements-dev.txt` for pytest. The suite needs no `.env`, no database server and no network: `tests/test_support.py` supplies its own credentials and a temporary SQLite file before the backend is imported.
+
+Continuous integration runs the suite on Python 3.11 and 3.12 for every pull request and for pushes to `main` (`.github/workflows/tests.yml`).
 
 Tests cover a fresh migration and adoption of an unversioned Phase 1 database, approval and target gates, OAuth/CSRF/PKCE state handling, encrypted-token lifecycle, declared and chunked upload bounds, signed media URLs, provider request/response mocks, Meta publishing-quota preflights and media constraints, TikTok privacy/consent constraints, idempotent scheduling, worker concurrency/lease recovery, ambiguous outcomes, bounded retries, metrics snapshots and CSV formula escaping. They make **no live provider calls**.
 

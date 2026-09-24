@@ -114,13 +114,14 @@ def _normalize_image(path: Path) -> tuple[str, str, int, int, int, str]:
         raise HTTPException(status_code=415, detail="The image file is corrupt, unsupported or unsafe to decode.") from exc
 
 
-def store_upload(upload: UploadFile) -> dict:
-    settings.media_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    staged = settings.media_dir / f".upload-{uuid.uuid4().hex}.tmp"
+def finalize_staged_media(staged: Path, original_name: str, size: int, source_digest: str, header: bytes) -> dict:
+    """Validate a staged file, move it into place and record it as a content asset.
+
+    Shared by browser uploads and Drive intake so both enforce identical type,
+    size and normalisation rules.
+    """
     final_path: Path | None = None
     try:
-        # Initial limit accommodates either image or video; type-specific limits are enforced after sniffing.
-        size, source_digest, header = _write_upload(upload, staged, max(settings.max_image_bytes, settings.max_video_bytes))
         if header[MP4_BRAND_OFFSET:MP4_BRAND_OFFSET + 4] == b"ftyp":
             if size > settings.max_video_bytes:
                 raise HTTPException(status_code=413, detail="Video exceeds the configured upload limit.")
@@ -143,7 +144,7 @@ def store_upload(upload: UploadFile) -> dict:
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
         row = {
             "id": asset_id,
-            "original_name": _safe_filename(upload.filename or "upload"),
+            "original_name": _safe_filename(original_name or "upload"),
             "mime_type": mime_type,
             "storage_key": storage_key,
             "size_bytes": final_size,
@@ -160,9 +161,32 @@ def store_upload(upload: UploadFile) -> dict:
         if final_path and final_path.exists():
             final_path.unlink(missing_ok=True)
         raise
+
+
+def store_upload(upload: UploadFile) -> dict:
+    settings.media_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    staged = settings.media_dir / f".upload-{uuid.uuid4().hex}.tmp"
+    try:
+        # Initial limit accommodates either image or video; type-specific limits are enforced after sniffing.
+        size, source_digest, header = _write_upload(upload, staged, max(settings.max_image_bytes, settings.max_video_bytes))
+        return finalize_staged_media(staged, upload.filename or "upload", size, source_digest, header)
     finally:
         staged.unlink(missing_ok=True)
         upload.file.close()
+
+
+def store_media_bytes(data: bytes, original_name: str) -> dict:
+    """Store already-fetched bytes (for example a file downloaded from Drive)."""
+    settings.media_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    staged = settings.media_dir / f".upload-{uuid.uuid4().hex}.tmp"
+    try:
+        with open(staged, "wb") as handle:
+            handle.write(data)
+        header = data[:32]
+        source_digest = hashlib.sha256(data).hexdigest()
+        return finalize_staged_media(staged, original_name, len(data), source_digest, header)
+    finally:
+        staged.unlink(missing_ok=True)
 
 
 def serialize_asset(row) -> dict:

@@ -1,0 +1,44 @@
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: pytest (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    # The suite finishes in well under a minute. Without this, a hang (or an
+    # unexpectedly slow download) sits on GitHub's six-hour default instead of
+    # failing fast and visibly.
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.11 is the documented minimum; 3.12 matches the Dockerfile runtime.
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      # The suite provides its own APP_PASSWORD/APP_SECRET/DATABASE_URL via
+      # tests/test_support.py and uses a temporary SQLite database, so no .env
+      # and no services are required here. ffprobe is not installed: the tests
+      # inject media durations directly, and backend/media.py degrades to a null
+      # duration when ffprobe is absent.
+      - name: Run tests
+        run: python -m pytest -q

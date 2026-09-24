@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 import uuid
@@ -13,7 +15,21 @@ from test_support import TEST_DATA  # noqa: F401
 from backend.database import audit_events, brand_profiles, content_ideas, content_variants
 
 ROOT = Path(__file__).resolve().parents[1]
-ALEMBIC = ROOT / ".venv" / "bin" / "alembic"
+
+
+def alembic_command() -> list[str]:
+    """Resolve the Alembic CLI without assuming a repo-local virtualenv.
+
+    Prefer the documented ``.venv`` install when present, then any ``alembic``
+    on ``PATH``, and finally the interpreter running the tests.
+    """
+    for candidate in (ROOT / ".venv" / "bin" / "alembic", Path(sys.executable).with_name("alembic")):
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return [str(candidate)]
+    on_path = shutil.which("alembic")
+    if on_path:
+        return [on_path]
+    return [sys.executable, "-m", "alembic"]
 
 
 def isolated_environment(database_url: str) -> dict[str, str]:
@@ -37,7 +53,7 @@ def isolated_environment(database_url: str) -> dict[str, str]:
 class MigrationTests(unittest.TestCase):
     def run_alembic(self, database_url: str, *arguments: str) -> subprocess.CompletedProcess:
         result = subprocess.run(
-            [str(ALEMBIC), *arguments], cwd=ROOT, env=isolated_environment(database_url),
+            [*alembic_command(), *arguments], cwd=ROOT, env=isolated_environment(database_url),
             capture_output=True, text=True, timeout=45,
         )
         self.assertEqual(result.returncode, 0, f"Alembic failed:\n{result.stdout}\n{result.stderr}")

@@ -21,6 +21,8 @@ x-app-environment: &app-environment
   AI_BASE_URL: ${AI_BASE_URL:-https://api.openai.com/v1}
   AI_MODEL: ${AI_MODEL:-gpt-4o-mini}
   MEDIA_DIR: /app/data/media
+  # Scratch space for Drive backup archives; /tmp is a small tmpfs here.
+  STAGING_DIR: /app/staging
   MAX_IMAGE_BYTES: ${MAX_IMAGE_BYTES:-20971520}
   MAX_VIDEO_BYTES: ${MAX_VIDEO_BYTES:-262144000}
   WORKER_POLL_SECONDS: ${WORKER_POLL_SECONDS:-5}
@@ -48,7 +50,9 @@ services:
     build: .
     restart: unless-stopped
     init: true
-    environment: *app-environment
+    environment:
+      <<: *app-environment
+      RUN_MODE: web
     depends_on:
       db:
         condition: service_healthy
@@ -56,6 +60,7 @@ services:
       - "127.0.0.1:8000:8000"
     volumes:
       - media-data:/app/data/media
+      - staging-data:/app/staging
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=256m
@@ -75,8 +80,10 @@ services:
     restart: unless-stopped
     stop_grace_period: 11m
     init: true
-    command: ["python", "-m", "backend.worker"]
-    environment: *app-environment
+    command: ["python", "-m", "backend.supervisor"]
+    environment:
+      <<: *app-environment
+      RUN_MODE: worker
     depends_on:
       db:
         condition: service_healthy
@@ -84,6 +91,7 @@ services:
         condition: service_healthy
     volumes:
       - media-data:/app/data/media:ro
+      - staging-data:/app/staging
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=256m
@@ -95,3 +103,4 @@ services:
 volumes:
   postgres-data:
   media-data:
+  staging-data:

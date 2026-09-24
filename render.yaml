@@ -1,0 +1,79 @@
+# Render Blueprint for Debelu Social Engine.
+#
+# Deploy with: Render Dashboard -> New -> Blueprint -> pick this repository.
+# Render prompts for the `sync: false` secrets and generates the rest.
+#
+# Why one service instead of the compose layout: a Render disk attaches to a
+# single service, and the publishing worker must read the media directory the web
+# process writes to. RUN_MODE=all runs both processes in one container, which is
+# what a single-attach disk allows. See the README's deployment section.
+services:
+  - type: web
+    name: debelu-social-engine
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    # A persistent disk requires a paid instance type; disks cannot be added to
+    # free services, and a service with a disk cannot autoscale.
+    plan: starter
+    region: oregon
+    branch: main
+    # Migrations run inside the supervisor before either process starts, so no
+    # preDeployCommand is needed here.
+    healthCheckPath: /api/health
+    autoDeployTrigger: 'off'
+    disk:
+      name: debelu-data
+      # One mount covers MEDIA_DIR and STAGING_DIR, so a backup archive is staged
+      # on the same volume instead of the container's small /tmp.
+      mountPath: /app/data
+      sizeGB: 10
+    envVars:
+      - key: RUN_MODE
+        value: all
+      - key: MEDIA_DIR
+        value: /app/data/media
+      - key: STAGING_DIR
+        value: /app/data/staging
+      - key: PORT
+        value: 8000
+      - key: DATABASE_URL
+        fromDatabase:
+          name: debelu-db
+          property: connectionString
+      - key: COOKIE_SECURE
+        value: 'true'
+      - key: COOKIE_SAMESITE
+        value: lax
+      - key: APP_TIMEZONE
+        value: Africa/Lagos
+      - key: APP_PUBLIC_URL
+        sync: false
+      # Generate once and keep it: changing APP_SECRET invalidates sessions, and
+      # losing SOCIAL_TOKEN_ENCRYPTION_KEY requires reconnecting every account.
+      - key: APP_SECRET
+        generateValue: true
+      - key: APP_PASSWORD
+        sync: false
+      - key: SOCIAL_TOKEN_ENCRYPTION_KEY
+        sync: false
+      # Publishing stays fail-closed until every prerequisite is met.
+      - key: SOCIAL_PUBLISHING_ENABLED
+        value: 'false'
+      - key: TIKTOK_DIRECT_POST_AUDITED
+        value: 'false'
+      - key: AI_API_KEY
+        sync: false
+      - key: AI_BASE_URL
+        value: https://api.openai.com/v1
+      - key: AI_MODEL
+        value: gpt-4o-mini
+
+databases:
+  - name: debelu-db
+    databaseName: debelu
+    user: debelu
+    # The connection string is handed to the app as `postgresql://...`, which
+    # backend/config.py converts to the psycopg 3 driver this project installs.
+    plan: basic-256mb
+    region: oregon
