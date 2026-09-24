@@ -1,0 +1,97 @@
+x-app-environment: &app-environment
+  APP_PASSWORD: ${APP_PASSWORD:?Set APP_PASSWORD in .env}
+  APP_SECRET: ${APP_SECRET:?Set APP_SECRET in .env}
+  DATABASE_URL: postgresql+psycopg://debelu:${POSTGRES_PASSWORD}@db:5432/debelu
+  APP_TIMEZONE: ${APP_TIMEZONE:-Africa/Lagos}
+  APP_PUBLIC_URL: ${APP_PUBLIC_URL:-}
+  SESSION_HOURS: ${SESSION_HOURS:-12}
+  COOKIE_SECURE: ${COOKIE_SECURE:-true}
+  COOKIE_SAMESITE: ${COOKIE_SAMESITE:-lax}
+  SOCIAL_TOKEN_ENCRYPTION_KEY: ${SOCIAL_TOKEN_ENCRYPTION_KEY:-}
+  SOCIAL_PUBLISHING_ENABLED: ${SOCIAL_PUBLISHING_ENABLED:-false}
+  TIKTOK_DIRECT_POST_AUDITED: ${TIKTOK_DIRECT_POST_AUDITED:-false}
+  INSTAGRAM_APP_ID: ${INSTAGRAM_APP_ID:-}
+  INSTAGRAM_APP_SECRET: ${INSTAGRAM_APP_SECRET:-}
+  INSTAGRAM_API_VERSION: ${INSTAGRAM_API_VERSION:-v26.0}
+  THREADS_APP_ID: ${THREADS_APP_ID:-}
+  THREADS_APP_SECRET: ${THREADS_APP_SECRET:-}
+  TIKTOK_CLIENT_KEY: ${TIKTOK_CLIENT_KEY:-}
+  TIKTOK_CLIENT_SECRET: ${TIKTOK_CLIENT_SECRET:-}
+  AI_API_KEY: ${AI_API_KEY:-}
+  AI_BASE_URL: ${AI_BASE_URL:-https://api.openai.com/v1}
+  AI_MODEL: ${AI_MODEL:-gpt-4o-mini}
+  MEDIA_DIR: /app/data/media
+  MAX_IMAGE_BYTES: ${MAX_IMAGE_BYTES:-20971520}
+  MAX_VIDEO_BYTES: ${MAX_VIDEO_BYTES:-262144000}
+  WORKER_POLL_SECONDS: ${WORKER_POLL_SECONDS:-5}
+  WORKER_LEASE_SECONDS: ${WORKER_LEASE_SECONDS:-600}
+  WORKER_MAX_ATTEMPTS: ${WORKER_MAX_ATTEMPTS:-5}
+  SOCIAL_HTTP_TIMEOUT_SECONDS: ${SOCIAL_HTTP_TIMEOUT_SECONDS:-30}
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: debelu
+      POSTGRES_USER: debelu
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set a random POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U debelu -d debelu"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  social-engine:
+    build: .
+    restart: unless-stopped
+    init: true
+    environment: *app-environment
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - media-data:/app/data/media
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=256m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  publisher-worker:
+    build: .
+    restart: unless-stopped
+    stop_grace_period: 11m
+    init: true
+    command: ["python", "-m", "backend.worker"]
+    environment: *app-environment
+    depends_on:
+      db:
+        condition: service_healthy
+      social-engine:
+        condition: service_healthy
+    volumes:
+      - media-data:/app/data/media:ro
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=256m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  postgres-data:
+  media-data:

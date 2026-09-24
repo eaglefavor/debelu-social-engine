@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0d1b31" />
+    <meta name="description" content="Debelu Social Engine — an approval-first content workspace for Debelu Ventures." />
+    <title>Debelu Social Engine</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <section class="login-screen" id="login-screen" hidden aria-label="Sign in">
+      <form class="login-card" id="login-form">
+        <div class="login-brand"><span class="brand-mark" aria-hidden="true"><span>D</span><i></i></span><span class="brand-name"><strong>DEBELU</strong><small>SOCIAL ENGINE</small></span></div>
+        <p class="login-kicker">PRIVATE WORKSPACE</p>
+        <h1>Welcome back.</h1>
+        <p class="login-copy">Sign in to access Debelu Ventures’ content workspace.</p>
+        <label class="login-label" for="login-password">Workspace password</label>
+        <input id="login-password" name="password" type="password" autocomplete="current-password" required minlength="12" autofocus />
+        <p class="login-error" id="login-error" role="alert" hidden></p>
+        <button class="button-primary login-submit" type="submit">Sign in <span>→</span></button>
+        <p class="login-footnote" id="login-footnote">Your workspace is private. Passwords and provider keys stay on the server.</p>
+      </form>
+    </section>
+
+    <div class="app-shell" id="app-shell" hidden>
+      <aside class="sidebar" id="sidebar" aria-label="Main navigation">
+        <a class="brand-lockup" href="#overview" data-page="overview" aria-label="Debelu Social Engine home">
+          <span class="brand-mark" aria-hidden="true"><span>D</span><i></i></span>
+          <span class="brand-name"><strong>DEBELU</strong><small>SOCIAL ENGINE</small></span>
+        </a>
+
+        <div class="workspace-switcher">
+          <span class="workspace-avatar">DV</span>
+          <span class="workspace-label"><strong>Debelu Ventures</strong><small>Brand workspace</small></span>
+          <span class="workspace-chevron" aria-hidden="true">⌄</span>
+        </div>
+
+        <div class="nav-caption">WORKSPACE</div>
+        <nav class="primary-nav">
+          <button class="nav-link active" type="button" data-page="overview">
+            <span class="nav-icon" data-icon="grid"></span><span>Overview</span>
+          </button>
+          <button class="nav-link" type="button" data-page="library">
+            <span class="nav-icon" data-icon="layers"></span><span>Content studio</span>
+            <span class="nav-count" id="nav-approval-count">0</span>
+          </button>
+          <button class="nav-link" type="button" data-page="calendar">
+            <span class="nav-icon" data-icon="calendar"></span><span>Content calendar</span>
+          </button>
+          <button class="nav-link" type="button" data-page="brand">
+            <span class="nav-icon" data-icon="sparkles"></span><span>Brand voice</span>
+          </button>
+        </nav>
+
+        <div class="nav-caption nav-caption-spaced">PUBLISH & MEASURE</div>
+        <nav class="secondary-nav">
+          <button class="nav-link" type="button" data-page="publishing">
+            <span class="nav-icon" data-icon="send"></span><span>Publishing</span>
+          </button>
+          <button class="nav-link" type="button" data-page="analytics">
+            <span class="nav-icon" data-icon="chart"></span><span>Analytics</span>
+          </button>
+        </nav>
+
+        <div class="sidebar-spacer"></div>
+        <section class="guardrail-card" aria-label="Approval policy">
+          <span class="guardrail-icon" data-icon="shield"></span>
+          <strong>Human in the loop</strong>
+          <p>Nothing gets published without your approval.</p>
+        </section>
+        <div class="sidebar-user">
+          <span class="user-avatar">DV</span>
+          <span class="user-label"><strong>Debelu Ventures</strong><small>Owner workspace</small></span>
+          <button class="user-signout" type="button" data-action="logout" aria-label="Sign out" title="Sign out">↗</button>
+        </div>
+      </aside>
+
+      <div class="main-shell">
+        <header class="topbar">
+          <div class="topbar-left">
+            <button class="mobile-menu-button" id="mobile-menu" type="button" aria-label="Open navigation" aria-expanded="false">
+              <span data-icon="menu"></span>
+            </button>
+            <div class="topbar-breadcrumb"><span>Debelu Ventures</span><span class="crumb-slash">/</span><strong id="topbar-page">Overview</strong></div>
+          </div>
+          <div class="topbar-actions">
+            <span class="demo-mode" id="runtime-status"><i></i><span>CONNECTING</span></span>
+            <button class="topbar-create" type="button" data-action="generate-ai-week" id="topbar-generate">
+              <span data-icon="sparkles"></span><span>Generate AI week</span>
+            </button>
+            <button class="topbar-avatar" type="button" data-page="brand" aria-label="Open brand profile">DV</button>
+          </div>
+        </header>
+
+        <main class="page-content" id="page-content" tabindex="-1"></main>
+      </div>
+    </div>
+
+    <dialog class="app-dialog" id="app-dialog" aria-labelledby="dialog-title">
+      <div id="dialog-content"></div>
+    </dialog>
+    <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="true"></div>
+  </body>
+</html>
