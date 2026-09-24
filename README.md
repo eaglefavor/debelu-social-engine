@@ -69,6 +69,74 @@ This service cannot run on Vercel or any other static host. It needs the long-ru
 
 Either way the backend itself must be deployed with `compose.yaml` behind HTTPS as described above.
 
+## Running it: choosing a host
+
+This service needs a **long-running process, a real database and a persistent disk**. That rules out static hosts and any platform that cannot keep a background worker resident.
+
+| Option | Fit | Notes |
+| --- | --- | --- |
+| **Docker Compose** (any VPS) | Best | The layout above needs no changes. Put it behind a managed HTTPS proxy. |
+| **Render** (`render.yaml`) | Good | Blueprint creates the service, disk and PostgreSQL. One service runs both processes. Paid instance required for a disk. |
+| **Fly.io** (`fly.toml`) | Good | Docker-native with a volume. One Machine runs both processes. |
+| **Vercel / Netlify / static hosts** | **No** | They publish static files only; every `/api/*` route 404s. See `vercel.json`. |
+| **Serverless functions** | **No** | The publishing worker is a permanent poll loop, not a request handler. |
+| **Google Drive / Sheets** | **No** | No code execution, no transactions, cannot serve the signed media URLs providers fetch. See the Drive section for what it *is* good for. |
+
+### Why one container instead of two
+
+`compose.yaml` runs the web service and the publishing worker separately, sharing a Docker volume. That does **not** map onto managed hosts:
+
+- **Fly.io**: "a volume can be attached to only one Machine" — separate process groups cannot share it.
+- **Render**: a disk attaches to a single service, and a service with a disk cannot autoscale.
+
+Because the worker reads the media directory the web service writes, splitting them breaks publishing. `RUN_MODE=all` therefore runs both processes in one container against one disk:
+
+```bash
+RUN_MODE=web     # migrate, then uvicorn only        (compose default)
+RUN_MODE=worker  # the publishing worker only        (compose worker service)
+RUN_MODE=all     # both in one container, one disk   (Fly.io, Render)
+```
+
+Migrations run inside the supervisor before whichever processes start, so the worker never sees a stale schema. On shutdown the worker stops first — it may be mid-publish, and it needs the web process still serving the media URL a provider is fetching. A clean `SIGTERM` exits **0**; a second signal forces immediate exit.
+
+The image stays non-root (uid 10001), which Compose volumes support because Docker copies the image's directory ownership into a fresh volume. **Platform volumes are mounted root-owned**, so the supervisor checks both data directories at startup and fails immediately with the fix rather than throwing later during an upload or backup:
+
+```
+Mounted volumes are often root-owned while this image runs as uid 10001.
+  Fly.io:  fly ssh console -C 'chown -R 10001:10001 /app/data'
+```
+
+### PostgreSQL connection strings
+
+Managed providers hand out `postgresql://` (Render, Fly) or `postgres://` (Heroku). SQLAlchemy maps both to **psycopg2**, which this project deliberately does not depend on — it ships psycopg 3. `backend/config.py` rewrites the scheme to `postgresql+psycopg://` for the app, Alembic and the Drive backup code alike. Without it the very first connection, including startup migrations, fails with `No module named 'psycopg2'`.
+
+`pg_dump` is invoked through libpq `PG*` environment variables, so credentials never appear in the process list, and query options such as `?sslmode=require` are preserved — dropping them makes pg_dump fail against an otherwise healthy database.
+
+### Render
+
+```bash
+# In the Render dashboard: New -> Blueprint -> select this repository.
+# Render prompts for APP_PASSWORD, APP_PUBLIC_URL, SOCIAL_TOKEN_ENCRYPTION_KEY
+# and AI_API_KEY, and generates APP_SECRET.
+```
+
+`render.yaml` provisions the web service (Docker, health check on `/api/health`), a 10 GB disk mounted at `/app/data`, and a PostgreSQL instance. Publishing starts disabled; enable it only after the prerequisites above are met. Set `APP_PUBLIC_URL` to the service URL so provider callbacks and media URLs resolve.
+
+### Fly.io
+
+```bash
+fly launch --no-deploy --copy-config --name <your-app-name>
+fly volumes create debelu_data --size 10 --region <region>
+fly secrets set APP_PASSWORD=... APP_SECRET=... SOCIAL_TOKEN_ENCRYPTION_KEY=...
+fly deploy
+```
+
+`fly.toml` mounts the volume at `/app/data` and deliberately disables scale-to-zero: the publishing worker must stay resident to pick up scheduled jobs, so suspending the Machine would silently stop processing.
+
+### CI
+
+`.github/workflows/tests.yml` runs the full suite on Python 3.11 and 3.12 for every pull request and push to `main`. The tests need no `.env`, no database server and no network.
+
 ## Google Drive side-channel (optional)
 
 Drive is **not** a backend for this application and cannot be one: it executes no code, offers no transactions or compare-and-swap, and cannot serve the signed `/public/media/{asset_id}` URLs that Meta and TikTok fetch. The publishing worker's exactly-once job claiming depends on a conditional `UPDATE ... WHERE status = ?` returning `rowcount == 1`, which Drive cannot express — losing it means duplicate posts to live accounts.
