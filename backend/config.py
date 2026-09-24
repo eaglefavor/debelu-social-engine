@@ -72,6 +72,14 @@ class Settings:
     threads_app_secret: str
     tiktok_client_key: str
     tiktok_client_secret: str
+    gdrive_enabled: bool
+    gdrive_service_account_json: str
+    gdrive_root_folder_name: str
+    gdrive_root_folder_id: str
+    gdrive_share_with: str
+    gdrive_backup_retention: int
+    gdrive_scopes: str
+    gdrive_http_timeout_seconds: float
     project_root: Path = PROJECT_ROOT
 
     @classmethod
@@ -153,6 +161,33 @@ class Settings:
         if social_client_credentials and (not public_base_url or not encryption_key):
             raise RuntimeError("Social OAuth requires APP_PUBLIC_URL and SOCIAL_TOKEN_ENCRYPTION_KEY; configure them before adding provider credentials.")
 
+        # Google Drive is an optional side-channel for backups, imports and exports.
+        # It is fail-closed: nothing contacts Google unless GDRIVE_ENABLED=true, and
+        # enabling it without credentials is a startup error rather than a silent no-op.
+        gdrive_enabled = env_bool("GDRIVE_ENABLED")
+        gdrive_service_account_json = os.environ.get("GDRIVE_SERVICE_ACCOUNT_JSON", "").strip()
+        gdrive_root_folder_id = os.environ.get("GDRIVE_ROOT_FOLDER_ID", "").strip()
+        gdrive_share_with = os.environ.get("GDRIVE_SHARE_WITH", "").strip()
+        gdrive_scopes = os.environ.get("GDRIVE_SCOPES", "https://www.googleapis.com/auth/drive").strip()
+        try:
+            gdrive_backup_retention = int(os.environ.get("GDRIVE_BACKUP_RETENTION", "14"))
+            gdrive_http_timeout_seconds = float(os.environ.get("GDRIVE_HTTP_TIMEOUT_SECONDS", "120"))
+        except ValueError as exc:
+            raise RuntimeError("GDRIVE_BACKUP_RETENTION and GDRIVE_HTTP_TIMEOUT_SECONDS must be numeric.") from exc
+        if not 1 <= gdrive_backup_retention <= 365:
+            raise RuntimeError("GDRIVE_BACKUP_RETENTION must be between 1 and 365.")
+        if not 5 <= gdrive_http_timeout_seconds <= 600:
+            raise RuntimeError("GDRIVE_HTTP_TIMEOUT_SECONDS must be between 5 and 600.")
+        if gdrive_enabled and not gdrive_service_account_json:
+            raise RuntimeError("GDRIVE_ENABLED=true requires GDRIVE_SERVICE_ACCOUNT_JSON (a key file path or inline JSON).")
+        if gdrive_share_with and "@" not in gdrive_share_with:
+            raise RuntimeError("GDRIVE_SHARE_WITH must be an email address, or blank.")
+        if gdrive_enabled and not gdrive_scopes:
+            raise RuntimeError("GDRIVE_SCOPES must not be blank when Google Drive is enabled.")
+        for scope in filter(None, (item.strip() for item in gdrive_scopes.split(","))):
+            if not scope.startswith("https://www.googleapis.com/auth/") and not scope.startswith("https://www.googleapis.com/auth/drive"):
+                raise RuntimeError("GDRIVE_SCOPES must be Google authorization scope URLs.")
+
         return cls(
             app_password=password,
             app_secret=secret,
@@ -183,6 +218,14 @@ class Settings:
             threads_app_secret=os.environ.get("THREADS_APP_SECRET", "").strip(),
             tiktok_client_key=os.environ.get("TIKTOK_CLIENT_KEY", "").strip(),
             tiktok_client_secret=os.environ.get("TIKTOK_CLIENT_SECRET", "").strip(),
+            gdrive_enabled=gdrive_enabled,
+            gdrive_service_account_json=gdrive_service_account_json,
+            gdrive_root_folder_name=os.environ.get("GDRIVE_ROOT_FOLDER_NAME", "Debelu Social Engine").strip() or "Debelu Social Engine",
+            gdrive_root_folder_id=gdrive_root_folder_id,
+            gdrive_share_with=gdrive_share_with,
+            gdrive_backup_retention=gdrive_backup_retention,
+            gdrive_scopes=gdrive_scopes,
+            gdrive_http_timeout_seconds=gdrive_http_timeout_seconds,
         )
 
     def oauth_redirect_uri(self, platform: str) -> str:
