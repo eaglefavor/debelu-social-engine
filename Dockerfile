@@ -18,4 +18,10 @@ RUN useradd --create-home --uid 10001 app \
 USER 10001:10001
 
 EXPOSE 8000
-CMD ["sh", "-c", "alembic upgrade head && exec uvicorn backend.main:app --host 0.0.0.0 --port 8000 --proxy-headers"]
+# RUN_MODE selects the process layout; migrations are handled inside the
+# supervisor so they always precede whichever processes start:
+#   web     uvicorn only (compose default)
+#   worker  publishing worker only
+#   all     both in one container, for hosts whose disks attach to one service
+ENV RUN_MODE=web
+CMD ["python", "-m", "backend.supervisor"]

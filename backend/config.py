@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -38,6 +39,23 @@ def env_bool(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def normalize_database_url(raw: str) -> str:
+    """Point provider-supplied PostgreSQL URLs at the driver this project installs.
+
+    Managed hosts hand out ``postgresql://`` (Render, Fly) or ``postgres://``
+    (Heroku). SQLAlchemy resolves both to psycopg2, which is deliberately not a
+    dependency here - the project ships psycopg 3. Without this, the first
+    connection fails with "No module named 'psycopg2'", and because Alembic reads
+    the same setting the container would fail during startup migrations.
+
+    A URL that already names a driver is returned untouched.
+    """
+    for prefix in ("postgres://", "postgresql://"):
+        if raw.startswith(prefix):
+            return "postgresql+psycopg://" + raw[len(prefix):]
+    return raw
+
+
 load_dotenv()
 
 
@@ -59,6 +77,7 @@ class Settings:
     social_publishing_enabled: bool
     tiktok_direct_post_audited: bool
     media_dir: Path
+    staging_dir: Path
     max_image_bytes: int
     max_video_bytes: int
     worker_poll_seconds: float
@@ -191,7 +210,7 @@ class Settings:
         return cls(
             app_password=password,
             app_secret=secret,
-            database_url=os.environ.get("DATABASE_URL", "sqlite:///./data/debelu.db"),
+            database_url=normalize_database_url(os.environ.get("DATABASE_URL", "sqlite:///./data/debelu.db")),
             cookie_secure=cookie_secure,
             cookie_samesite=cookie_samesite,
             allow_preview_embed=allow_preview_embed,
@@ -205,6 +224,11 @@ class Settings:
             social_publishing_enabled=env_bool("SOCIAL_PUBLISHING_ENABLED"),
             tiktok_direct_post_audited=env_bool("TIKTOK_DIRECT_POST_AUDITED"),
             media_dir=Path(os.environ.get("MEDIA_DIR", str(PROJECT_ROOT / "data" / "media"))).expanduser().resolve(),
+            # Scratch space for Drive backup archives and restores. Kept separate from
+            # MEDIA_DIR so an archive is never picked up by the next media backup, and
+            # configurable because container /tmp is often a small tmpfs that a full
+            # media archive would exhaust.
+            staging_dir=Path(os.environ.get("STAGING_DIR", tempfile.gettempdir())).expanduser().resolve(),
             max_image_bytes=max_image_bytes,
             max_video_bytes=max_video_bytes,
             worker_poll_seconds=worker_poll_seconds,

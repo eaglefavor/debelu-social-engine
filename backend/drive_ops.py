@@ -117,8 +117,51 @@ def _csv_cell(value: Any) -> Any:
     return value
 
 
+def staging_directory() -> str:
+    """Return a writable scratch directory, creating it if needed.
+
+    Defaults to the system temp dir, but STAGING_DIR should point at a volume in
+    container deployments: the compose tmpfs is 256 MB and a full media archive
+    will exceed it.
+    """
+    settings.staging_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return str(settings.staging_dir)
+
+
 def database_url_parts():
     return make_url(settings.database_url)
+
+
+def libpq_environment(url) -> dict[str, str]:
+    """Translate a SQLAlchemy URL into libpq ``PG*`` variables for pg_dump.
+
+    Two details matter here:
+
+    * Host, user and password travel through the environment, so credentials
+      never appear in the process list.
+    * Query-string options are preserved. Managed providers commonly hand out
+      ``?sslmode=require``, and silently dropping it makes pg_dump fail against
+      an otherwise working database. ``host``/``port`` may also appear only as
+      query parameters (a Unix-socket URL has no netloc at all), so those are
+      read from either place.
+    """
+    query = dict(url.query)
+    host = url.host or query.pop("host", "") or "localhost"
+    port = url.port or query.pop("port", "") or 5432
+    database = url.database or query.pop("dbname", "") or "postgres"
+    environment = {
+        **os.environ,
+        "PGHOST": str(host),
+        "PGPORT": str(port),
+        "PGUSER": url.username or "postgres",
+        "PGPASSWORD": url.password or "",
+        "PGDATABASE": str(database),
+    }
+    # Remaining options map onto libpq's own environment variables, e.g.
+    # sslmode -> PGSSLMODE, connect_timeout -> PGCONNECT_TIMEOUT.
+    for key, value in query.items():
+        environment[f"PG{key.upper()}"] = str(value)
+    return environment
 
 
 def sqlite_path() -> Path | None:
@@ -157,15 +200,7 @@ def snapshot_database(destination: Path) -> dict:
     executable = shutil.which("pg_dump")
     if not executable:
         raise DriveError("pg_dump is not on PATH; install the PostgreSQL client tools to back up PostgreSQL.")
-    # Credentials travel through the environment, never through argv.
-    environment = {
-        **os.environ,
-        "PGHOST": url.host or "localhost",
-        "PGPORT": str(url.port or 5432),
-        "PGUSER": url.username or "postgres",
-        "PGPASSWORD": url.password or "",
-        "PGDATABASE": url.database or "postgres",
-    }
+    environment = libpq_environment(url)
     result = subprocess.run(
         [executable, "--format=custom", "--no-password", "--file", str(destination)],
         env=environment, capture_output=True, text=True, timeout=900,
@@ -180,7 +215,7 @@ def backup_database(client: DriveClient | None = None, now: datetime | None = No
     moment = now or now_utc()
     folder = client.ensure_path(DATABASE_FOLDER)
     name = f"debelu-{slug(moment)}.sqlite"
-    with tempfile.TemporaryDirectory(prefix="debelu-backup-") as directory:
+    with tempfile.TemporaryDirectory(prefix="debelu-backup-", dir=staging_directory()) as directory:
         destination = Path(directory) / name
         details = snapshot_database(destination)
         file_id = client.upload_bytes(name, destination.read_bytes(), folder, "application/vnd.sqlite3")
@@ -196,7 +231,7 @@ def backup_media(client: DriveClient | None = None, now: datetime | None = None)
     name = f"debelu-media-{slug(moment)}.zip"
     media_dir = settings.media_dir
     included = 0
-    with tempfile.TemporaryDirectory(prefix="debelu-media-") as directory:
+    with tempfile.TemporaryDirectory(prefix="debelu-media-", dir=staging_directory()) as directory:
         archive = Path(directory) / name
         with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
             if media_dir.is_dir():
@@ -320,7 +355,7 @@ def _inspect_sqlite(path: Path) -> dict:
 
 def verify_database_backup(client: DriveClient, file_id: str) -> dict:
     """Download a backup and confirm it is a usable Debelu database."""
-    with tempfile.TemporaryDirectory(prefix="debelu-verify-") as directory:
+    with tempfile.TemporaryDirectory(prefix="debelu-verify-", dir=staging_directory()) as directory:
         candidate = Path(directory) / "candidate.sqlite"
         candidate.write_bytes(client.download_bytes(file_id))
         metadata = client.get_file(file_id)
@@ -344,7 +379,7 @@ def restore_database(client: DriveClient, file_id: str, confirm: bool = False,
     if target is None:
         raise DriveError("restore_database supports SQLite only. Use pg_restore for PostgreSQL.")
     moment = now or now_utc()
-    with tempfile.TemporaryDirectory(prefix="debelu-restore-") as directory:
+    with tempfile.TemporaryDirectory(prefix="debelu-restore-", dir=staging_directory()) as directory:
         candidate = Path(directory) / "candidate.sqlite"
         candidate.write_bytes(client.download_bytes(file_id))
         inspected = _inspect_sqlite(candidate)
