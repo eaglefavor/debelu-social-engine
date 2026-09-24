@@ -55,6 +55,20 @@ For any public deployment:
 
 Keep `.env` private. AI and social credentials stay on the server; no provider key or social token belongs in frontend code, a public repository, or chat. `AI_BASE_URL` supports OpenAI-compatible Chat Completions services and must use HTTPS except for localhost development.
 
+### Why Vercel does not serve this app
+
+This service cannot run on Vercel or any other static host. It needs the long-running FastAPI process, PostgreSQL and the separate publishing worker — the three services defined in `compose.yaml`. A Vercel project connected to this repository builds a **static site**: `index.html`, `app.js` and `styles.css` are published, and every `/api/*` route returns 404. The UI loads and then reports the backend as unavailable.
+
+`vercel.json` therefore disables automatic deployments, so no such build is published. To serve the frontend from Vercel against a backend hosted elsewhere, replace that block with a rewrite that proxies API traffic to the real origin:
+
+```json
+{
+  "rewrites": [{ "source": "/api/(.*)", "destination": "https://api.example.com/api/$1" }]
+}
+```
+
+Either way the backend itself must be deployed with `compose.yaml` behind HTTPS as described above.
+
 ## Implemented workflow
 
 - **Persistent workspace:** content ideas, platform variants, brand profile, approvals, attached media, schedules, publishing jobs, analytics snapshots and audit history are persisted in the configured database.
@@ -90,6 +104,10 @@ Run the offline/mock-based suite:
 ```bash
 .venv/bin/python -m unittest discover -s tests -v
 ```
+
+`python -m pytest -q` runs the same suite; install `requirements-dev.txt` for pytest. The suite needs no `.env`, no database server and no network: `tests/test_support.py` supplies its own credentials and a temporary SQLite file before the backend is imported.
+
+Continuous integration runs the suite on Python 3.11 and 3.12 for every pull request and for pushes to `main` (`.github/workflows/tests.yml`).
 
 Tests cover a fresh migration and adoption of an unversioned Phase 1 database, approval and target gates, OAuth/CSRF/PKCE state handling, encrypted-token lifecycle, declared and chunked upload bounds, signed media URLs, provider request/response mocks, Meta publishing-quota preflights and media constraints, TikTok privacy/consent constraints, idempotent scheduling, worker concurrency/lease recovery, ambiguous outcomes, bounded retries, metrics snapshots and CSV formula escaping. They make **no live provider calls**.
 
