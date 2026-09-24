@@ -69,6 +69,51 @@ This service cannot run on Vercel or any other static host. It needs the long-ru
 
 Either way the backend itself must be deployed with `compose.yaml` behind HTTPS as described above.
 
+## Google Drive side-channel (optional)
+
+Drive is **not** a backend for this application and cannot be one: it executes no code, offers no transactions or compare-and-swap, and cannot serve the signed `/public/media/{asset_id}` URLs that Meta and TikTok fetch. The publishing worker's exactly-once job claiming depends on a conditional `UPDATE ... WHERE status = ?` returning `rowcount == 1`, which Drive cannot express — losing it means duplicate posts to live accounts.
+
+What Drive *is* good at is the work that happens around the request path. All of it is optional and disabled by default (`GDRIVE_ENABLED=false`); when disabled, nothing contacts Google and the app behaves exactly as before.
+
+| Command | What it does |
+| --- | --- |
+| `python -m backend.drive_cli backup` | Database, media archive and a status manifest, then prunes old backups |
+| `python -m backend.drive_cli list-backups` | Lists existing backups with retention applied |
+| `python -m backend.drive_cli verify <file-id>` | Downloads a backup and checks header, integrity and expected tables |
+| `python -m backend.drive_cli restore <file-id> --confirm` | Restores a SQLite database, keeping a pre-restore safety copy |
+| `python -m backend.drive_cli import-ideas <file-id>` | Creates ideas from a Sheet or CSV (`--dry-run` to preview) |
+| `python -m backend.drive_cli ingest-media <folder-id>` | Imports images/video into the asset library (`--dry-run` to preview) |
+| `python -m backend.drive_cli export-reports` | Uploads weekly and lifetime analytics CSV |
+| `python -m backend.drive_cli folders` | Creates and prints the folder layout |
+| `python -m backend.drive_cli status` | Shows configuration without writing anything |
+
+Every command prints a JSON summary, so `backup` suits a cron entry. Backups close the gap noted above: the README already asks for backups of **both** PostgreSQL and the media volume, and this covers both plus a manifest an operator can read without database access. The manifest deliberately excludes credentials, tokens and provider secrets.
+
+### Setting it up
+
+1. Create a Google Cloud service account with the Drive API enabled, and download its JSON key.
+2. Set `GDRIVE_ENABLED=true` and point `GDRIVE_SERVICE_ACCOUNT_JSON` at that key file (or paste the JSON).
+3. Choose one of these, because **a service account has its own empty Drive**:
+   - Create a folder in *your* Drive, share it with the service account's `client_email`, and set `GDRIVE_ROOT_FOLDER_ID` to that folder's id; **or**
+   - Leave `GDRIVE_ROOT_FOLDER_ID` blank and set `GDRIVE_SHARE_WITH` to your email — the app creates folders automatically and shares them with you, since you otherwise cannot see them.
+
+### Idea import format
+
+CSV, or a Google Sheet (exported as CSV automatically). Only `topic` is required; `category` falls back to `CYBERSECURITY` and platform columns become draft bodies:
+
+```csv
+topic,category,audience,instagram,threads,tiktok
+Zero trust basics,CLOUD,Platform teams,IG draft,Threads draft,
+```
+
+Imports are idempotent by topic — re-running after adding rows creates only the new ones. Media intake de-duplicates on the stored asset digest, so the same folder can be re-ingested safely. Both support `--dry-run`.
+
+### Notes and limits
+
+- Restore is SQLite-only and refuses to run without `--confirm`. PostgreSQL backups are taken with `pg_dump` (required on `PATH` for a PostgreSQL deployment); restore them with `pg_restore` in a maintenance window. Credentials are passed to `pg_dump` through the environment, never as command-line arguments.
+- Media intake reuses the same validation as browser uploads, so type, size and image normalisation rules are identical.
+- Restoring while the app is running is not advisable: stop the web process and the worker first.
+
 ## Implemented workflow
 
 - **Persistent workspace:** content ideas, platform variants, brand profile, approvals, attached media, schedules, publishing jobs, analytics snapshots and audit history are persisted in the configured database.
