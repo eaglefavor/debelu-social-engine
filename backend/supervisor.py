@@ -69,6 +69,17 @@ def worker_command() -> list[str]:
     return [sys.executable, "-m", "backend.worker"]
 
 
+def exec_or_die(command: list[str]) -> None:
+    """Replace this process with ``command``.
+
+    ``os.execvp`` only returns by raising, but the dispatch in :func:`main` must not
+    depend on that. If it ever returned, execution would fall through into the
+    supervise branch and silently start *both* processes in a single-process mode.
+    """
+    os.execvp(command[0], command)
+    raise SystemExit(f"Could not start {command[0]}: os.execvp returned without replacing the process.")
+
+
 def migrate() -> None:
     """Apply Alembic migrations, failing the container if they do not succeed."""
     logger.info("Applying database migrations")
@@ -202,10 +213,10 @@ def main() -> int:
     if mode == "worker":
         logger.info("Starting publishing worker only")
         # exec so the worker is PID-of-record and receives signals directly.
-        os.execvp(worker_command()[0], worker_command())
+        exec_or_die(worker_command())
     if mode == "web":
         logger.info("Starting web server on port %s", port())
-        os.execvp(web_command()[0], web_command())
+        exec_or_die(web_command())
     logger.info("Starting web server and publishing worker together (RUN_MODE=all)")
     return supervise()
 

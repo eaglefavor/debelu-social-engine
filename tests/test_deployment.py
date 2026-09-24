@@ -113,6 +113,27 @@ class LibpqEnvironmentTests(unittest.TestCase):
 
 
 class SupervisorTests(unittest.TestCase):
+    """Dispatch tests.
+
+    These must never spawn a real server or worker. Mocking ``os.execvp`` alone is
+    not enough: while ``main`` had no early return, a mocked exec fell through into
+    the supervise branch, which started both processes for real. Locally that
+    merely failed to bind port 8000, so the suite stayed green; on CI the port is
+    free, uvicorn served forever and the job blocked until it timed out. The
+    ``supervise`` patcher below turns that class of mistake into a loud failure.
+    """
+
+    def setUp(self):
+        # A developer's own .env must not choose the branch a test exercises.
+        self.load_environment = mock.patch.object(supervisor, "load_environment")
+        self.load_environment.start()
+        self.addCleanup(self.load_environment.stop)
+        self.supervise = mock.patch.object(
+            supervisor, "supervise",
+            side_effect=AssertionError("a single-process mode must never call supervise()"))
+        self.supervise_mock = self.supervise.start()
+        self.addCleanup(self.supervise.stop)
+
     def test_run_mode_defaults_to_web_and_rejects_unknown_values(self):
         with mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop("RUN_MODE", None)
@@ -159,9 +180,12 @@ class SupervisorTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"RUN_MODE": "worker"}), \
              mock.patch.object(supervisor, "ensure_writable_directories"), \
              mock.patch.object(supervisor, "migrate") as migrate, \
-             mock.patch.object(supervisor.os, "execvp"):
-            supervisor.main()
+             mock.patch.object(supervisor.os, "execvp") as execvp:
+            with self.assertRaises(SystemExit) as caught:
+                supervisor.main()
         migrate.assert_not_called()
+        self.assertIn("os.execvp returned", str(caught.exception))
+        self.assertEqual(execvp.call_args[0][1][1:], ["-m", "backend.worker"])
 
     def test_web_mode_migrates_before_exec_ing(self):
         calls: list[str] = []
@@ -169,9 +193,21 @@ class SupervisorTests(unittest.TestCase):
              mock.patch.object(supervisor, "ensure_writable_directories"), \
              mock.patch.object(supervisor, "migrate", side_effect=lambda: calls.append("migrate")), \
              mock.patch.object(supervisor.os, "execvp") as execvp:
-            supervisor.main()
-        self.assertIn("migrate", calls)
+            with self.assertRaises(SystemExit):
+                supervisor.main()
+        self.assertEqual(calls, ["migrate"], "migrations must run before the server starts")
         self.assertTrue(execvp.called, "web mode should replace the process image")
+        self.assertIn("uvicorn", execvp.call_args[0][1])
+
+    def test_a_mocked_exec_still_does_not_start_the_second_process(self):
+        """Regression test for the CI hang: no fall-through into the 'all' branch."""
+        with mock.patch.dict(os.environ, {"RUN_MODE": "web"}), \
+             mock.patch.object(supervisor, "ensure_writable_directories"), \
+             mock.patch.object(supervisor, "migrate"), \
+             mock.patch.object(supervisor.os, "execvp"):
+            with self.assertRaises(SystemExit):
+                supervisor.main()
+        self.supervise_mock.assert_not_called()
 
     def test_all_mode_supervises_both_processes(self):
         with mock.patch.dict(os.environ, {"RUN_MODE": "all"}), \
@@ -181,6 +217,18 @@ class SupervisorTests(unittest.TestCase):
             self.assertEqual(supervisor.main(), 0)
         migrate.assert_called_once()
         supervise.assert_called_once()
+
+    def test_environment_is_loaded_before_the_mode_is_chosen(self):
+        order: list[str] = []
+        with mock.patch.dict(os.environ, {"RUN_MODE": "worker"}), \
+             mock.patch.object(supervisor, "load_environment", side_effect=lambda: order.append("load_environment")), \
+             mock.patch.object(supervisor, "run_mode", side_effect=lambda: order.append("run_mode") or "worker"), \
+             mock.patch.object(supervisor, "ensure_writable_directories"), \
+             mock.patch.object(supervisor, "migrate"), \
+             mock.patch.object(supervisor.os, "execvp"):
+            with self.assertRaises(SystemExit):
+                supervisor.main()
+        self.assertEqual(order, ["load_environment", "run_mode"], "env must load before RUN_MODE is read")
 
 
 class WritableDirectoryGuardTests(unittest.TestCase):
@@ -226,17 +274,6 @@ if __name__ == "__main__":
 
 
 class EnvironmentLoadingTests(unittest.TestCase):
-    def test_dotenv_is_loaded_before_run_mode_is_read(self):
-        """RUN_MODE in .env must take effect; reading it first silently starts web-only."""
-        order: list[str] = []
-        with mock.patch.object(supervisor, "run_mode", side_effect=lambda: order.append("run_mode") or "web"), \
-             mock.patch.object(supervisor, "load_environment", side_effect=lambda: order.append("load_environment")), \
-             mock.patch.object(supervisor, "ensure_writable_directories"), \
-             mock.patch.object(supervisor, "migrate"), \
-             mock.patch.object(supervisor.os, "execvp"):
-            supervisor.main()
-        self.assertEqual(order, ["load_environment", "run_mode"], "env must load before RUN_MODE is read")
-
     def test_load_environment_reads_a_dotenv_file(self):
         with tempfile.TemporaryDirectory() as directory:
             env_file = Path(directory) / ".env"
