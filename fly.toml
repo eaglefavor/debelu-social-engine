@@ -1,0 +1,59 @@
+# Fly.io configuration for Debelu Social Engine.
+#
+# First deploy:
+#   fly launch --no-deploy --copy-config --name <your-app-name>
+#   fly volumes create debelu_data --size 10 --region <region>
+#   fly secrets set APP_PASSWORD=... APP_SECRET=... SOCIAL_TOKEN_ENCRYPTION_KEY=...
+#   fly deploy
+#
+# A single process group runs both the web server and the publishing worker.
+# Fly volumes attach to exactly one Machine, so splitting them into separate
+# process groups would leave the worker unable to read the media directory the
+# web process writes. RUN_MODE=all keeps both on one Machine and one volume.
+
+app = "debelu-social-engine"
+primary_region = "jnb"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  RUN_MODE = "all"
+  MEDIA_DIR = "/app/data/media"
+  STAGING_DIR = "/app/data/staging"
+  COOKIE_SECURE = "true"
+  COOKIE_SAMESITE = "lax"
+  APP_TIMEZONE = "Africa/Lagos"
+  # Publishing stays fail-closed until every prerequisite is met.
+  SOCIAL_PUBLISHING_ENABLED = "false"
+  TIKTOK_DIRECT_POST_AUDITED = "false"
+  AI_BASE_URL = "https://api.openai.com/v1"
+  AI_MODEL = "gpt-4o-mini"
+
+[[mounts]]
+  # Both MEDIA_DIR and STAGING_DIR live on this volume, so a media archive is
+  # staged on persistent storage rather than the Machine's small /tmp.
+  source = "debelu_data"
+  destination = "/app/data"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  # Do not scale to zero: the publishing worker must stay resident to pick up
+  # scheduled jobs and collect metrics. Suspending it would silently stop
+  # processing until the next request arrives.
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "30s"
+    method = "GET"
+    path = "/api/health"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "1gb"
